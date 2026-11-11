@@ -8640,6 +8640,118 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     }
   }
 
+  describe("Discord channel refresh", () => {
+    async function refreshFixture() {
+      const fixture = await seedCompany();
+      const applicationId = uniqueDiscordApplicationId();
+      const guildId = "1457808928258658549";
+      const baseFetch = fakeDiscordFetch(applicationId, guildId);
+      let channels: unknown = [
+        { id: "333333333333333333", name: "agent-lab", position: 1, type: 0 },
+      ];
+      let channelStatus = 200;
+      const providerFetch = (async (input: string | URL | Request) => {
+        if (new URL(String(input)).pathname !== `/api/v10/guilds/${guildId}/channels`) return baseFetch(input);
+        return Response.json(channels, { status: channelStatus });
+      }) as typeof globalThis.fetch;
+      const context = createService(new FakeChatSdkRuntime(), providerFetch);
+      const endpoint = await context.service.create(
+        fixture.companyId,
+        { provider: "discord", assignedAgentId: fixture.assignedAgentId },
+        "owner-user",
+      );
+      await context.service.configure(
+        endpoint.id,
+        { action: "configure", credentials: { applicationId, botToken: "discord-secret", guildId } },
+        "owner-user",
+      );
+      return {
+        ...context,
+        fixture,
+        endpoint,
+        setChannels: (next: unknown, status = 200) => { channels = next; channelStatus = status; },
+      };
+    }
+
+    it("adds new channels disabled and keeps existing channel choices", async () => {
+      const f = await refreshFixture();
+      const [existing] = await f.service.listResources(f.endpoint.id);
+      await f.service.replaceResources(f.endpoint.id, [{ id: existing!.id, enabled: true }], "owner-user");
+      f.setChannels([
+        { id: "333333333333333333", name: "agent-lab-renamed", position: 1, type: 0 },
+        { id: "333333333333333334", name: "fresh-channel", position: 2, type: 0 },
+      ]);
+
+      const refreshed = await f.service.refreshDiscordChannels(f.endpoint.id, "owner-user");
+
+      expect(refreshed.map(({ providerResourceId, label, availability, enabled }) => ({ providerResourceId, label, availability, enabled }))).toEqual([
+        { providerResourceId: "333333333333333333", label: "#agent-lab-renamed", availability: "available", enabled: true },
+        { providerResourceId: "333333333333333334", label: "#fresh-channel", availability: "available", enabled: false },
+      ]);
+      const activity = await db.select().from(activityLog).where(and(
+        eq(activityLog.companyId, f.fixture.companyId),
+        eq(activityLog.action, "chat_endpoint.discord_channels_refreshed"),
+      ));
+      expect(activity).toHaveLength(1);
+      expect(activity[0]).toMatchObject({ actorType: "user", actorId: "owner-user", entityId: f.endpoint.connectionId });
+    });
+
+    it("marks channels that left the bot's reach unavailable", async () => {
+      const f = await refreshFixture();
+      f.setChannels([{ id: "333333333333333334", name: "fresh-channel", position: 2, type: 0 }]);
+
+      const refreshed = await f.service.refreshDiscordChannels(f.endpoint.id, "owner-user");
+
+      expect(refreshed.find(resource => resource.providerResourceId === "333333333333333333")?.availability).toBe("unavailable");
+      expect(refreshed.find(resource => resource.providerResourceId === "333333333333333334")?.availability).toBe("available");
+    });
+
+    it("keeps the stored channel list when Discord inventory fails", async () => {
+      const f = await refreshFixture();
+      const before = await f.service.listResources(f.endpoint.id);
+      f.setChannels({ message: "Service unavailable" }, 503);
+
+      await expect(f.service.refreshDiscordChannels(f.endpoint.id, "owner-user")).rejects.toMatchObject({
+        status: 422,
+        details: { code: "chat_provider_inventory_failed" },
+      });
+      expect(await f.service.listResources(f.endpoint.id)).toEqual(before);
+    });
+
+    it("refreshes channels through the connection management route", async () => {
+      const f = await refreshFixture();
+      f.setChannels([
+        { id: "333333333333333333", name: "agent-lab", position: 1, type: 0 },
+        { id: "333333333333333334", name: "fresh-channel", position: 2, type: 0 },
+      ]);
+
+      const response = await request(routesApp(db, f.fixture.companyId, f.service))
+        .post(`/api/chat-endpoints/${f.endpoint.id}/discord/channels/refresh`)
+        .expect(200);
+
+      expect(response.body.map((resource: { providerResourceId: string }) => resource.providerResourceId)).toEqual([
+        "333333333333333333",
+        "333333333333333334",
+      ]);
+    });
+
+    it("rejects non-Discord and paused connections", async () => {
+      const f = await refreshFixture();
+      const slack = await f.service.create(
+        f.fixture.companyId,
+        { provider: "slack", assignedAgentId: f.fixture.assignedAgentId },
+        "owner-user",
+      );
+      await expect(f.service.refreshDiscordChannels(slack.id, "owner-user")).rejects.toMatchObject({ status: 404 });
+
+      const configured = await f.service.get(f.endpoint.id);
+      await db.update(chatEndpoints).set({ status: "active", setup: { ...configured.setup, step: "complete" } })
+        .where(eq(chatEndpoints.id, f.endpoint.id));
+      await f.service.configure(f.endpoint.id, { action: "pause" }, "owner-user");
+      await expect(f.service.refreshDiscordChannels(f.endpoint.id, "owner-user")).rejects.toMatchObject({ status: 409 });
+    });
+  });
+
   describe("Discord automatic command registration", () => {
     async function retireRegistrationFixture(
       service: ChatChannelService,
@@ -12521,6 +12633,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       request(memberApp)
         .put(`/api/chat-endpoints/${endpoint.id}/github/repositories/access`)
         .send({ enabled: false }),
+      request(memberApp).post(
+        `/api/chat-endpoints/${endpoint.id}/discord/channels/refresh`,
+      ),
       request(memberApp)
         .post(`/api/companies/${fixture.companyId}/chat-endpoints`)
         .send({ provider: "slack", assignedAgentId: fixture.assignedAgentId }),

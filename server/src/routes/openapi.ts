@@ -2796,6 +2796,26 @@ registry.registerPath({
 registry.registerPath({
   "x-paperclip-transport": "rest",
   "x-paperclip-connection-management": "connections:configure",
+  method: "post",
+  path: "/api/chat-endpoints/{endpointId}/discord/channels/refresh",
+  tags: ["chat-channels"],
+  summary: "Refresh Discord channels available to the bot",
+  description:
+    "Fetches the bot's current text channels from Discord and reconciles destinations. New channels start disabled, existing channels keep their enablement, and channels the bot can no longer reach become unavailable. A failed Discord lookup leaves the stored list unchanged. The connection must be active or awaiting its first test conversation.",
+  request: { params: z.object({ endpointId: z.string().uuid() }) },
+  responses: {
+    200: r.ok(z.array(chatEndpointResourceResponseSchema)),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:configure",
   method: "put",
   path: "/api/chat-endpoints/{endpointId}/resources",
   tags: ["chat-channels"],

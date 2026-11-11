@@ -503,6 +503,29 @@ function Settings({
         tone: "error",
       }),
   });
+  const refreshDiscordChannels = useMutation({
+    mutationFn: () => chatEndpointsApi.refreshDiscordChannels(endpointId),
+    onSuccess: (resources) => {
+      queryClient.setQueryData(
+        queryKeys.chatEndpoints.resources(endpointId),
+        resources,
+      );
+      pushToast({
+        title: "Channels refreshed",
+        body: "New channels stay disabled until you enable them.",
+        tone: "success",
+      });
+    },
+    onError: (error) =>
+      pushToast({
+        title: "Couldn't refresh channels",
+        body: describeError(error).body,
+        tone: "error",
+      }),
+  });
+  const canRefreshDiscordChannels =
+    endpoint.provider === "discord" &&
+    ["active", "verifying"].includes(endpoint.status);
   const updateEndpoint = useMutation({
     mutationFn: chatEndpointsApi.update.bind(null, endpointId),
     onSuccess: (next) =>
@@ -546,7 +569,22 @@ function Settings({
         </div>
       )}
       <div className="space-y-2">
-        <h3 className="text-sm font-semibold">{endpoint.provider === "slack" ? "Allowed Channels" : "Destinations"}</h3>
+        <div className="flex items-center gap-2">
+          <h3 className="text-sm font-semibold">{endpoint.provider === "slack" ? "Allowed Channels" : "Destinations"}</h3>
+          {canRefreshDiscordChannels && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-xs"
+              aria-label="Refresh channels"
+              title="Refresh channels"
+              disabled={refreshDiscordChannels.isPending}
+              onClick={() => refreshDiscordChannels.mutate()}
+            >
+              <RefreshCw className={refreshDiscordChannels.isPending ? "size-3 animate-spin" : "size-3"} />
+            </Button>
+          )}
+        </div>
         {resourcesView.kind === "error" ? <QueryErrorState size="inline" error={resourcesQuery.error} action={endpoint.provider === "slack" ? "load the channels" : "load the destinations"} onRetry={resourcesView.retry} retrying={resourcesView.isFetching} /> : resourcesQuery.isLoading || resourcesView.kind === "reconnecting" ? (
           <p className="text-sm text-muted-foreground">Loading destinations…</p>
         ) : destinationResources.length === 0 && endpoint.provider !== "slack" ? (
@@ -1013,6 +1051,7 @@ function Activity({
         return;
       }
       if (endpoint.provider !== "agentmail") queryClient.setQueryData(queryKeys.chatEndpoints.detail(endpointId), next);
+      if (action === "resume") await queryClient.invalidateQueries({ queryKey: queryKeys.chatEndpoints.resources(endpointId) });
       pushToast({
         title: action === "pause" ? "Connection paused" : "Connection resumed",
         tone: "success",

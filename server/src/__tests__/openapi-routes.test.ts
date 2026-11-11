@@ -855,6 +855,7 @@ describe("openapi routes", () => {
       ["post", "/api/chat-endpoints/{endpointId}/test"],
       ["post", "/api/chat-endpoints/{endpointId}/photon/inspect"],
       ["get", "/api/chat-endpoints/{endpointId}/resources"],
+      ["post", "/api/chat-endpoints/{endpointId}/discord/channels/refresh"],
       ["put", "/api/chat-endpoints/{endpointId}/resources"],
       ["get", "/api/chat-endpoints/{endpointId}/principals"],
       [
